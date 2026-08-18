@@ -1,0 +1,37 @@
+# Python environment
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs & Runtime State
+logs/
+state/
+scratch/
+*.log
+
+# Sensitive data / Secrets
+*.env
+*.json
+!package.json
+gcp-key.json
+service-account*.json
+credentials/
+
+# Downloads & Temp media
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.webm
+downloads/
+temp/
+
+# IDE / System
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,497 @@
+# # =========================================================================
+# # pipeline_config.yaml -- all tunable thresholds, worker caps, storage.
+# # CPU-ONLY build: device is forced to "cpu" everywhere; GPU-heavy models run
+# # behind a single inference worker to avoid CPU thread contention.
+# # NO SQLite: resume is by output-file existence + a JSONL audit run-log.
+# # =========================================================================
+
+# state_name: "tamil-nadu"
+
+# # Force CPU everywhere (Intel iGPU, no CUDA). Set to "auto" to allow cuda if present.
+# device: "cpu"
+
+# # ---------------------------------------------------------------------------
+# # Storage / upload (Design: GCS destination; local backend for testing).
+# # Final layout:  <root>/<state_name>/<audio_category>/<recording_id>.wav|.txt
+# # Only ACCEPT (Gold) and REVIEW are stored. REJECT is never stored.
+# # ---------------------------------------------------------------------------
+# storage:
+#   backend: "gcs"                  # "local" | "gcs"  -- gcs: upload only, no local data
+#   root: "kl-workspace/Data_scraping_version1/Song"   # for gcs: first segment = bucket
+#   review_subdir: "review"         # REVIEW -> <root>/<state>/review/<category>/...
+#   save_lyrics_txt: true
+#   # Ephemeral local scratch ONLY: each download lands here, is uploaded to GCS,
+#   # then deleted immediately. Nothing persists here. Uses the OS temp dir so the
+#   # project folder stays clean. Override with an absolute path if you want.
+#   staging_dir: null               # null = system temp dir (e.g. %TEMP%/tnfolk-staging)
+#   gcloud_path: "C:/Users/Lenovo/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud.cmd"
+#   # e.g. gcloud_path: "C:/Users/Lenovo/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud.cmd"
+
+# # ---------------------------------------------------------------------------
+# # Resume / audit. No database. JSONL run-log is audit-only but is also read at
+# # startup as a skip-set so already-processed (incl. REJECT) ids aren't redone.
+# # Fingerprints for dedupe persist to a simple JSONL (not a DB).
+# # ---------------------------------------------------------------------------
+# run_log:
+#   path: "state/run_log.jsonl"
+# fingerprint_store:
+#   path: "state/fingerprints.jsonl"
+
+# # ---------------------------------------------------------------------------
+# # Per-stage concurrency caps. inference/transcription = 1 (CPU-only, no GPU).
+# # ---------------------------------------------------------------------------
+# workers:
+#   search: 2
+#   download: 2
+#   quality: 2
+#   inference: 1          # PANNs + sentence-transformers + CLAP (serialized on CPU)
+#   transcription: 1       # transcription itself runs on the remote API, but keep
+#                           # this at 1 so local requests to the API are serialized
+#                           # and don't flood the shared server
+
+# # ---------------------------------------------------------------------------
+# # Network reliability (tenacity). Never retry forever.
+# # NOTE: search_page_retry below is a SEPARATE, lighter retry policy applied
+# # specifically to yt-dlp search-page fetches (where 403s cluster on deep
+# # pagination), so a transient block on one page doesn't just get skipped --
+# # it gets retried with backoff before being logged as a genuine failure.
+# # ---------------------------------------------------------------------------
+# retry:
+#   max_attempts: 2  # Fail-fast: prevents waiting on dead external endpoints
+#   initial_backoff_sec: 2.0
+#   max_backoff_sec: 60.0
+#   backoff_multiplier: 2.0
+#   jitter_sec: 1.0
+
+# search_page_retry:
+#   max_attempts: 3
+#   initial_backoff_sec: 5.0
+#   max_backoff_sec: 30.0
+#   backoff_multiplier: 2.0
+#   jitter_sec: 2.0
+#   retry_on_status: [403, 429]
+
+# # ---------------------------------------------------------------------------
+# # Search / discovery -- EXHAUST MODE
+# #
+# # Bounded channel expansion avoids enumerating 10k-20k videos from a
+# # single channel in one run, preventing HTTP 403 rate limits while ensuring
+# # thorough discovery across all folk search terms.
+# # ---------------------------------------------------------------------------
+# search:
+#   exhaust_max_rounds: 3
+#   exhaust_confirm_empty: 2
+#   max_videos: 0                   # 0 = no cap, scrape until YouTube has nothing left
+#   max_pages_per_query: 6          # caps deep pagination where 403s cluster
+#   max_per_query: 100              # ytsearch100 = 5 pages per query, stays under 403 threshold
+
+#   # Authentication (prevents anonymous throttling)
+#   cookies_from_browser: "firefox" # must match browser you're logged into YouTube with
+
+#   # Channel expansion
+#   exhaust_channel_expand: 5       # expand top 5 contributing folk channels per round
+#   max_channel_videos: 300         # cap at 300 videos per channel (prevents 20k video page floods)
+
+#   # Throttling
+#   sleep_between_searches_sec: 5   # seconds between individual search queries
+#   sleep_between_rounds_sec: 10    # seconds between exhaust rounds
+#   sleep_between_requests_sec: 2.5 # NEW: was 1.0 -- raised because 403s were hitting on
+#                                    # pages 4-10; more spacing between page requests reduces
+#                                    # how often YouTube's rate limiter trips
+
+#   # Authentication -- anonymous deep-pagination requests get throttled far more
+#   # aggressively than authenticated ones. Set this to the browser you're
+#   # logged into YouTube with ("chrome", "firefox", "edge", etc.).
+#   cookies_from_browser: "firefox"  # NEW: was null -- CHANGE to your actual browser if not Chrome
+
+# # ---------------------------------------------------------------------------
+# # Download (yt-dlp + ffmpeg). Full track, converted to mono wav @ target SR.
+# # ---------------------------------------------------------------------------
+# download:
+#   format: "bestaudio/best"
+#   target_sample_rate: 16000
+#   target_channels: 1
+#   cookies_from_browser: null      # null avoids SABR PO-token requirements on audio download
+#   ffmpeg_path: null               # null = use ffmpeg on PATH
+#   ffprobe_path: null              # null = use ffprobe on PATH
+
+# # ---------------------------------------------------------------------------
+# # Audio duration bounds & Chunking for long videos
+# # ---------------------------------------------------------------------------
+# audio:
+#   minimum_duration_sec: 10        # below 10s -> REJECT TOO_SHORT
+#   maximum_duration_sec: 300        # 5 min max: genuine individual folk/lullaby songs only
+
+# chunking:
+#   enabled: false                   # Disabled: every accepted song is kept as 1 clean complete track
+#   chunk_threshold_sec: 300
+#   target_chunk_duration_sec: 120
+#   min_chunk_duration_sec: 30
+#   max_chunk_duration_sec: 180
+#   max_chunks_per_video: 5
+#   silence_thresh_db: -35
+#   min_silence_len_sec: 0.8
+
+# # ---------------------------------------------------------------------------
+# # Metadata relevance gate (cheap, pre-download)
+# # ---------------------------------------------------------------------------
+# metadata_gate:
+#   fuzzy_match_threshold: 70
+#   min_keyword_hits: 1
+#   review_margin: 8
+#   exclude_terms:
+#     INTERVIEW: ["interview", "பேட்டி", "petti"]
+#     SPEECH: ["speech", "பேச்சு", "pechu", "address", "உரை"]
+#     PODCAST: ["podcast"]
+#     NEWS: ["news", "செய்திகள்"]
+#     LECTURE: ["lecture", "சொற்பொழிவு", "sorpozhivu"]
+
+# # ---------------------------------------------------------------------------
+# # Audio quality gate -- highest priority, pure DSP, hard-threshold rejects.
+# # ---------------------------------------------------------------------------
+# quality_gate:
+#   minimum_quality_score: 0.55     # composite below -> hard REJECT override (final scoring)
+#   maximum_silence_ratio: 0.45     # -> MOSTLY_SILENT
+#   near_silence_dbfs: -55.0
+#   maximum_clipping_ratio: 0.05    # -> EXCESSIVE_CLIPPING
+#   clipping_sample_threshold: 0.99
+#   minimum_snr_db: 5.0             # -> VERY_LOW_SNR
+#   maximum_noise_floor_dbfs: -25.0 # -> EXCESSIVE_NOISE
+#   minimum_dynamic_range_db: 4.0   # -> SEVERE_DISTORTION
+#   loudness:
+#     min_lufs: -45.0
+#     max_lufs: -4.0
+#   dropout:
+#     max_dropout_ratio: 0.10       # -> AUDIO_DROPOUT
+#     gap_min_ms: 50
+#   bandwidth:
+#     min_rolloff_hz: 3000.0        # below -> LOW_BANDWIDTH (telephone audio)
+#   min_sample_rate: 16000
+
+# # ---------------------------------------------------------------------------
+# # Music / Speech / Mixed classifier (PANNs Cnn14, CPU).
+# # ---------------------------------------------------------------------------
+# classifier:
+#   music_min_prob: 0.25
+#   speech_reject_prob: 0.85        # spoken-dominant (no override) -> SPEECH
+#   mixed_low: 0.25
+#   default_max_speech_ratio: 0.55  # overridable per category
+
+# # ---------------------------------------------------------------------------
+# # VAD (Silero) -- supporting signal only.
+# # ---------------------------------------------------------------------------
+# vad:
+#   threshold: 0.5
+#   sampling_rate: 16000
+
+# # ---------------------------------------------------------------------------
+# # Folk-relevance gate. Rejection code is ALWAYS NON_FOLK.
+# # CLAP is a SECONDARY signal, invoked ONLY in the uncertain band to save CPU.
+# # ---------------------------------------------------------------------------
+# folk_relevance:
+#   embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+#   accept_similarity: 0.35
+#   review_similarity: 0.25
+#   uncertain_band: 0.06            # within +/- of review_similarity -> run CLAP fallback
+#   clap:
+#     enabled: true
+#     model_name: null              # null = laion_clap default checkpoint
+#     blend_weight: 0.5             # weight of CLAP audio-text sim when blended
+
+# # ---------------------------------------------------------------------------
+# # Duplicate detection (Chromaprint / fpcalc). Recording-level only.
+# # ---------------------------------------------------------------------------
+# duplicate:
+#   fingerprint_similarity: 0.90    # >= -> DUPLICATE_RECORDING
+#   fpcalc_length_sec: 120          # fingerprint first N seconds
+#   fpcalc_path: null               # null = fpcalc on PATH
+
+# # ---------------------------------------------------------------------------
+# # Weighted final scoring + decision buckets.
+# # HARD OVERRIDE (explicit): quality < quality_gate.minimum_quality_score -> REJECT.
+# # ---------------------------------------------------------------------------
+# scoring:
+#   weights:
+#     quality: 0.40
+#     folk_relevance: 0.30
+#     music_speech: 0.20
+#     vad: 0.10
+#   accept_threshold: 0.50
+#   review_threshold: 0.40
+
+# # ---------------------------------------------------------------------------
+# # Post-accept transcription -- remote GPU API (faster-whisper on teammate's
+# # RTX 6000 server). Falls back gracefully; a failure never undoes ACCEPT.
+# # CONFIRMED: intentionally using the remote Tamil-Whisper API as the sole
+# # transcription backend for this run. Local fallback stays commented out
+# # and should NOT be uncommented (it points at an unvalidated checkpoint).
+# # ---------------------------------------------------------------------------
+# transcription:
+#   backend: "api"                   # "api" = remote GPU server | "local" = local faster-whisper
+#   language: "ta"
+
+#   # -- Remote API settings (backend: "api") --
+#   api_url: "http://34.180.25.118:3005/api/transcribe"
+#   api_timeout_sec: 5               # 5s: fail-fast mode -- doesn't block audio uploading when server is hung
+#   api_task: "transcribe"           # "transcribe" or "translate"
+
+#   # -- Local faster-whisper settings (backend: "local") -- uncomment to use --
+#   # DO NOT uncomment for normal runs: this checkpoint has no model card, no
+#   # eval data, and effectively no community usage. Only enable for an
+#   # explicit, deliberate side-by-side accuracy comparison against the API.
+#   # hf_model_id: "inspiredclone101/whisper-tamil-ft-v1"
+#   # ct2_model_dir: "models/whisper-tamil-ft-v1-ct2"
+#   # compute_type: "int8"
+#   # beam_size: 5
+#   # vad_filter: true
+
+#   max_retries: 1  # NOTE: actual retries controlled by retry.max_attempts below
+
+# # ---------------------------------------------------------------------------
+# # Logging
+# # ---------------------------------------------------------------------------
+# logging:
+#   level: "INFO"
+#   dir: "logs"
+#   file: "pipeline.log"
+
+
+
+
+
+
+# =========================================================================
+# pipeline_config.yaml -- all tunable thresholds, worker caps, storage.
+# CPU-ONLY build: device is forced to "cpu" everywhere; GPU-heavy models run
+# behind a single inference worker to avoid CPU thread contention.
+# NO SQLite: resume is by output-file existence + a JSONL audit run-log.
+# =========================================================================
+
+state_name: "tamil-nadu"
+
+# Force CPU everywhere (Intel iGPU, no CUDA). Set to "auto" to allow cuda if present.
+device: "cpu"
+
+# ---------------------------------------------------------------------------
+# Storage / upload (Design: GCS destination; local backend for testing).
+# Final layout:  <root>/<state_name>/<audio_category>/<recording_id>.wav|.txt
+# Only ACCEPT (Gold) and REVIEW are stored. REJECT is never stored.
+# ---------------------------------------------------------------------------
+storage:
+  backend: "gcs"                  # "local" | "gcs"  -- gcs: upload only, no local data
+  root: "kl-workspace/Data_scraping_version1/Song"   # for gcs: first segment = bucket
+  review_subdir: "review"         # REVIEW -> <root>/<state>/review/<category>/...
+  save_lyrics_txt: true
+  staging_dir: null               # null = system temp dir (e.g. %TEMP%/tnfolk-staging)
+  gcloud_path: "C:/Users/Lenovo/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud.cmd"
+
+# ---------------------------------------------------------------------------
+# Resume / audit. No database.
+# ---------------------------------------------------------------------------
+run_log:
+  path: "state/run_log.jsonl"
+fingerprint_store:
+  path: "state/fingerprints.jsonl"
+
+# ---------------------------------------------------------------------------
+# Per-stage concurrency caps. inference/transcription = 1 (CPU-only, no GPU).
+# ---------------------------------------------------------------------------
+workers:
+  search: 2
+  download: 2
+  quality: 2
+  inference: 1
+  transcription: 1
+
+# ---------------------------------------------------------------------------
+# Network reliability (tenacity).
+# ---------------------------------------------------------------------------
+retry:
+  max_attempts: 2  # Fail-fast: prevents waiting on dead external endpoints
+  initial_backoff_sec: 2.0
+  max_backoff_sec: 60.0
+  backoff_multiplier: 2.0
+  jitter_sec: 1.0
+
+search_page_retry:
+  max_attempts: 3
+  initial_backoff_sec: 5.0
+  max_backoff_sec: 30.0
+  backoff_multiplier: 2.0
+  jitter_sec: 2.0
+  retry_on_status: [403, 429]
+
+# ---------------------------------------------------------------------------
+# Search / discovery -- EXHAUST MODE
+# ---------------------------------------------------------------------------
+search:
+  exhaust_max_rounds: 3
+  exhaust_confirm_empty: 2
+  max_videos: 0
+  max_pages_per_query: 6
+  max_per_query: 100
+
+  cookies_from_browser: "firefox"
+
+  exhaust_channel_expand: 5
+  max_channel_videos: 300
+
+  sleep_between_searches_sec: 5
+  sleep_between_rounds_sec: 10
+  sleep_between_requests_sec: 2.5
+
+  extractor_retries: 3
+  extractor_retry_sleep: "exp=3:30"
+  ytsearch_batch_size: 100
+
+# ---------------------------------------------------------------------------
+# Download (yt-dlp + ffmpeg).
+# ---------------------------------------------------------------------------
+download:
+  format: "bestaudio/best"
+  target_sample_rate: 16000
+  target_channels: 1
+  cookies_from_browser: null      # null avoids SABR PO-token requirements on audio download
+  ffmpeg_path: null
+  ffprobe_path: null
+
+# ---------------------------------------------------------------------------
+# Audio duration bounds & Chunking for long videos
+# ---------------------------------------------------------------------------
+audio:
+  minimum_duration_sec: 10
+  maximum_duration_sec: 300
+
+chunking:
+  enabled: false
+  chunk_threshold_sec: 300
+  target_chunk_duration_sec: 120
+  min_chunk_duration_sec: 30
+  max_chunk_duration_sec: 180
+  max_chunks_per_video: 5
+  silence_thresh_db: -35
+  min_silence_len_sec: 0.8
+
+# ---------------------------------------------------------------------------
+# Metadata relevance gate
+# ---------------------------------------------------------------------------
+metadata_gate:
+  fuzzy_match_threshold: 70
+  min_keyword_hits: 1
+  review_margin: 8
+  exclude_terms:
+    INTERVIEW: ["interview", "பேட்டி", "petti"]
+    SPEECH: ["speech", "பேச்சு", "pechu", "address", "உரை"]
+    PODCAST: ["podcast"]
+    NEWS: ["news", "செய்திகள்"]
+    LECTURE: ["lecture", "சொற்பொழிவு", "sorpozhivu"]
+
+# ---------------------------------------------------------------------------
+# Audio quality gate
+# ---------------------------------------------------------------------------
+quality_gate:
+  minimum_quality_score: 0.55
+  maximum_silence_ratio: 0.45
+  near_silence_dbfs: -55.0
+  maximum_clipping_ratio: 0.05
+  clipping_sample_threshold: 0.99
+  minimum_snr_db: 5.0
+  maximum_noise_floor_dbfs: -25.0
+  minimum_dynamic_range_db: 4.0
+  loudness:
+    min_lufs: -45.0
+    max_lufs: -4.0
+  dropout:
+    max_dropout_ratio: 0.10
+    gap_min_ms: 50
+  bandwidth:
+    min_rolloff_hz: 3000.0
+  min_sample_rate: 16000
+
+# ---------------------------------------------------------------------------
+# Music / Speech / Mixed classifier (PANNs Cnn14, CPU).
+# ---------------------------------------------------------------------------
+classifier:
+  music_min_prob: 0.25
+  speech_reject_prob: 0.85
+  mixed_low: 0.25
+  default_max_speech_ratio: 0.55
+
+# ---------------------------------------------------------------------------
+# VAD (Silero)
+# ---------------------------------------------------------------------------
+vad:
+  threshold: 0.5
+  sampling_rate: 16000
+
+# ---------------------------------------------------------------------------
+# Folk-relevance gate.
+# ---------------------------------------------------------------------------
+folk_relevance:
+  embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  accept_similarity: 0.35
+  review_similarity: 0.25
+  uncertain_band: 0.06
+  clap:
+    enabled: true
+    model_name: null
+    blend_weight: 0.5
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+duplicate:
+  fingerprint_similarity: 0.90
+  fpcalc_length_sec: 120
+  fpcalc_path: null
+
+# ---------------------------------------------------------------------------
+# Weighted final scoring + decision buckets.
+# ---------------------------------------------------------------------------
+scoring:
+  weights:
+    quality: 0.40
+    folk_relevance: 0.30
+    music_speech: 0.20
+    vad: 0.10
+  accept_threshold: 0.50
+  review_threshold: 0.40
+
+# ---------------------------------------------------------------------------
+# Post-accept transcription -- remote GPU API.
+# ---------------------------------------------------------------------------
+transcription:
+  backend: "api"
+  language: "ta"
+
+  api_url: "http://34.180.25.118:3005/api/transcribe"
+  # FIX: 5s was nowhere near enough time for a real transcription request --
+  # sending the audio, running inference, and getting the transcript back
+  # realistically takes tens of seconds to a couple minutes on a shared
+  # server, especially under load from teammates. 5s meant EVERY transcription
+  # failed, not just ones where the server was genuinely hung -- your audio
+  # was still uploading fine (ACCEPT survives transcription failure by design)
+  # but you were silently losing every .txt lyrics file. 180s gives a real
+  # transcription room to finish while still bailing well before the pipeline
+  # would otherwise stall on a truly dead server.
+  api_timeout_sec: 180
+  api_task: "transcribe"
+
+  # -- Local faster-whisper settings (backend: "local") -- uncomment to use --
+  # DO NOT uncomment for normal runs: this checkpoint has no model card, no
+  # eval data, and effectively no community usage.
+  # hf_model_id: "inspiredclone101/whisper-tamil-ft-v1"
+  # ct2_model_dir: "models/whisper-tamil-ft-v1-ct2"
+  # compute_type: "int8"
+  # beam_size: 5
+  # vad_filter: true
+
+  max_retries: 1  # NOTE: actual retries controlled by retry.max_attempts below
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  dir: "logs"
+  file: "pipeline.log"
