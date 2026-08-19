@@ -231,8 +231,9 @@
 #   language: "ta"
 
 #   # -- Remote API settings (backend: "api") --
-#   api_url: "http://34.180.25.118:3005/api/transcribe"
-#   api_timeout_sec: 5               # 5s: fail-fast mode -- doesn't block audio uploading when server is hung
+#   api_url: "http://34.180.59.63:5001/api/transcribe"
+#   fallback_api_url: "http://34.180.25.118:3005/api/transcribe"
+#   api_timeout_sec: 180
 #   api_task: "transcribe"           # "transcribe" or "translate"
 
 #   # -- Local faster-whisper settings (backend: "local") -- uncomment to use --
@@ -464,16 +465,10 @@ transcription:
   backend: "api"
   language: "ta"
 
-  api_url: "http://34.180.25.118:3005/api/transcribe"
-  # FIX: 5s was nowhere near enough time for a real transcription request --
-  # sending the audio, running inference, and getting the transcript back
-  # realistically takes tens of seconds to a couple minutes on a shared
-  # server, especially under load from teammates. 5s meant EVERY transcription
-  # failed, not just ones where the server was genuinely hung -- your audio
-  # was still uploading fine (ACCEPT survives transcription failure by design)
-  # but you were silently losing every .txt lyrics file. 180s gives a real
-  # transcription room to finish while still bailing well before the pipeline
-  # would otherwise stall on a truly dead server.
+  # Primary remote GPU API endpoint
+  api_url: "http://34.180.59.63:5001/api/transcribe"
+  # Fallback remote GPU API endpoint if primary fails
+  fallback_api_url: "http://34.180.25.118:3005/api/transcribe"
   api_timeout_sec: 180
   api_task: "transcribe"
 

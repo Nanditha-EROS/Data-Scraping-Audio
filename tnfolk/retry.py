@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Type
 
+# pyrefly: ignore [missing-import]
 from tenacity import (
     Retrying,
     retry_if_not_exception_type,

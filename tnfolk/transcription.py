@@ -31,26 +31,24 @@ _log = get_logger("transcription")
 #  Remote API backend
 # =========================================================================
 
-def _transcribe_api(audio_path: str, cfg: PipelineConfig) -> str:
-    """POST the audio file to the remote faster-whisper GPU API.
+def _normalize_api_url(url: str) -> str:
+    """Ensure the endpoint path (/api/transcribe) is present."""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if not (u.endswith("/api/transcribe") or u.endswith("/transcribe")):
+        u = u.rstrip("/") + "/api/transcribe"
+    return u
 
-    Endpoint:  POST /api/transcribe  (multipart form-data)
-    Fields:    file (binary), task ("transcribe"), language ("ta")
-    Returns:   The transcript text from the JSON response.
-    """
+
+def _post_transcribe(audio_path: str, url: str, task: str, language: str, timeout: int) -> str:
     import requests
 
-    t = cfg.raw["transcription"]
-    api_url = t["api_url"]
-    timeout = int(t.get("api_timeout_sec", 180))
-    language = t.get("language", "ta")
-    task = t.get("api_task", "transcribe")
-
-    _log.info("API transcribe %s -> %s", os.path.basename(audio_path), api_url)
+    _log.info("API transcribe %s -> %s", os.path.basename(audio_path), url)
 
     with open(audio_path, "rb") as f:
         resp = requests.post(
-            api_url,
+            url,
             files={"file": (os.path.basename(audio_path), f, "audio/wav")},
             data={"task": task, "language": language},
             timeout=timeout,
@@ -60,8 +58,8 @@ def _transcribe_api(audio_path: str, cfg: PipelineConfig) -> str:
     # server rejected the request (bad field name, unsupported format, etc.)
     if not resp.ok:
         _log.error(
-            "API transcribe failed (%s) for %s -- server said: %s",
-            resp.status_code, os.path.basename(audio_path), resp.text[:1000],
+            "API transcribe failed (%s) for %s at %s -- server said: %s",
+            resp.status_code, os.path.basename(audio_path), url, resp.text[:1000],
         )
     resp.raise_for_status()
     payload = resp.json()
@@ -85,6 +83,40 @@ def _transcribe_api(audio_path: str, cfg: PipelineConfig) -> str:
     _log.info("API transcription done for %s (%d chars)",
               os.path.basename(audio_path), len(text))
     return text
+
+
+def _transcribe_api(audio_path: str, cfg: PipelineConfig) -> str:
+    """POST the audio file to the remote faster-whisper GPU API (with fallback if configured).
+
+    Endpoint:  POST /api/transcribe  (multipart form-data)
+    Fields:    file (binary), task ("transcribe"), language ("ta")
+    Returns:   The transcript text from the JSON response.
+    """
+    t = cfg.raw["transcription"]
+    primary_url = _normalize_api_url(str(t.get("api_url", "")))
+    fallback_url = _normalize_api_url(str(t.get("fallback_api_url", "")))
+    timeout = int(t.get("api_timeout_sec", 180))
+    language = t.get("language", "ta")
+    task = t.get("api_task", "transcribe")
+
+    candidate_urls = [u for u in [primary_url, fallback_url] if u]
+    if not candidate_urls:
+        raise ValueError("No API URL configured for transcription backend 'api'")
+
+    last_exc: Exception | None = None
+    for idx, url in enumerate(candidate_urls):
+        try:
+            return _post_transcribe(audio_path, url, task, language, timeout)
+        except Exception as exc:
+            last_exc = exc
+            if idx < len(candidate_urls) - 1:
+                _log.warning(
+                    "Primary transcription URL failed (%s: %s). Trying fallback URL: %s",
+                    type(exc).__name__, exc, candidate_urls[idx + 1]
+                )
+    if last_exc:
+        raise last_exc
+    return ""
 
 
 # =========================================================================

@@ -119,6 +119,31 @@ class Pipeline:
             if candidate.decision == Decision.REJECT:
                 return self._conclude(candidate, category)
 
+            # ---- Stage 2.5: Pre-download Duration Check ----
+            # candidate.duration_sec comes from YouTube search metadata -- no download needed.
+            # Reject immediately if the video is already outside bounds, saving all the
+            # bandwidth of downloading 200-600 MB compilations that we know will be rejected.
+            if candidate.duration_sec and candidate.duration_sec > 0:
+                _audio_cfg = self.cfg.raw["audio"]
+                _min_dur = float(_audio_cfg.get("minimum_duration_sec", 10))
+                _max_dur = float(_audio_cfg.get("maximum_duration_sec", 300))
+                if candidate.duration_sec > _max_dur:
+                    _log.info(
+                        "pre-download REJECT %s [TOO_LONG] duration=%.0fs > max=%.0fs | %s",
+                        rid, candidate.duration_sec, _max_dur, candidate.title[:60]
+                    )
+                    candidate.decision = Decision.REJECT
+                    candidate.rejection_code = RejectionCode.TOO_LONG
+                    return self._conclude(candidate, category)
+                if candidate.duration_sec < _min_dur:
+                    _log.info(
+                        "pre-download REJECT %s [TOO_SHORT] duration=%.0fs < min=%.0fs | %s",
+                        rid, candidate.duration_sec, _min_dur, candidate.title[:60]
+                    )
+                    candidate.decision = Decision.REJECT
+                    candidate.rejection_code = RejectionCode.TOO_SHORT
+                    return self._conclude(candidate, category)
+
             # ---- Stage 3: Download Full Audio ----
             try:
                 candidate.audio_path = downloader.download_audio(
@@ -201,13 +226,18 @@ class Pipeline:
             return decision
 
         if decision == Decision.REVIEW:
+            # Store REVIEW songs in the same folder as ACCEPT (not the review/ subfolder).
+            # This ensures they appear alongside accepted songs in GCS for easy review.
             try:
                 self.storage.store(candidate.recording_id, category.folder_slug,
-                                   Decision.REVIEW, candidate.audio_path, None)
+                                   Decision.ACCEPT, candidate.audio_path, None,
+                                   title=candidate.title, channel=candidate.channel,
+                                   source_url=candidate.youtube_url)
             except Exception as exc:  # noqa: BLE001
                 _log.error("failed to store REVIEW %s: %r", candidate.recording_id, exc)
             self._discard_staged(candidate)
-            _log.info("REVIEW %s %s", candidate.recording_id, candidate.title[:60])
+            _log.info("REVIEW (stored to main folder) %s %s",
+                      candidate.recording_id, candidate.title[:60])
             self._log_result(candidate, decision)
             return decision
 

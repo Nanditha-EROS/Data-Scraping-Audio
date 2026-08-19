@@ -62,11 +62,18 @@ _NON_TAMIL_SCRIPT_RE = re.compile(
     r"]"
 )
 
-# English title patterns that are clearly non-Tamil language channels.
+# English / Latin title patterns that indicate non-Tamil regional content.
 _NON_TAMIL_ENGLISH_TERMS = [
-    # Telugu/Kannada folk giveaways
+    # Indian non-Tamil languages & states
     "telugu", "kannada", "malayalam", "hindi", "bengali", "marathi",
-    "kiswahili", "swahili",
+    "bhojpuri", "rajasthani", "punjabi", "haryanvi", "gujarati", "odia",
+    "assamese", "santhali", "kiswahili", "swahili",
+    # Non-Tamil regional folk indicators & words
+    "telangana", "andhra", "janapada", "janapada geethalu", "janapada geethegalu",
+    "naadan pattu", "nadan pattu", "patalu", "paata", "pata", "banjara", "lambadi",
+    "sakkanode", "poradu", "rathod", "mangli", "folkgrapher", "kattipidikkum",
+    # Specific non-Tamil music channels / labels
+    "aditya music", "aditya folk", "naa songs", "mango music", "siri music",
     # Non-Tamil nursery rhyme channels
     "nursery rhyme", "nursery rhymes", "abc song", "abc songs",
     "kids song english", "kids english song",
@@ -153,6 +160,28 @@ def evaluate(candidate: Candidate, category: Category, cfg: PipelineConfig) -> G
             return GateResult.reject(
                 Stage.METADATA_GATE, RejectionCode.NON_FOLK,
                 message=f"non-Tamil language marker '{non_tamil_term}' in title -> rejected (Tamil-only)",
+            )
+
+    # 1a-2) Require explicit Tamil context if title/description has no Tamil script.
+    # If there is no Tamil script ([\u0B80-\u0BFF]), the metadata MUST contain at least one
+    # recognized Tamil language or cultural term (e.g. 'tamil', 'nattupura', 'gramiya', etc.)
+    # to avoid matching non-Tamil (Telugu/Hindi/Bhojpuri) folk songs that only match generic 'folk song'.
+    if not _has_tamil(raw):
+        _tamil_latin_markers = [
+            "tamil", "tamizh", "tn", "tamilnadu", "nattupura", "naattupura",
+            "gramiya", "paadal", "paattu", "paatu", "padal", "themmangu",
+            "kummi", "kolattam", "amman", "thalattu", "oonjal", "kuthu",
+            "villu", "parai", "oppari", "sadangu", "maruthu", "aadi",
+            "samayapuram", "karuppan", "karuppasamy", "ayyanar", "madan",
+            "isakki", "mutharamman", "draupadi", "kathavarayan", "udukkai",
+            "oyilattam", "therukoothu", "kuravan", "gaana", "ponnar",
+            "kattabomman", "kadhalan", "kadhal", "kadhali", "seevalaperi",
+        ]
+        has_tamil_latin_marker = any(_term_present(m, low, raw) for m in _tamil_latin_markers)
+        if not has_tamil_latin_marker:
+            return GateResult.reject(
+                Stage.METADATA_GATE, RejectionCode.NON_FOLK,
+                message="no Tamil script or Tamil context marker found in metadata -> rejected (Tamil-only)",
             )
 
     # 1b) Hard content-type exclusions -> standardized rejection code.

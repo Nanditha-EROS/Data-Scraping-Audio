@@ -20,6 +20,8 @@ scratch/
 gcp-key.json
 service-account*.json
 credentials/
+cookies.txt
+*cookie*.txt
 
 # Downloads & Temp media
 *.mp3
